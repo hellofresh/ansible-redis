@@ -23,5 +23,10 @@
   tags:
     - config
 
+- include: cluster.yml
+  when: redis_cluster|bool
+  tags:
+    - config
+
 - include: local_facts.yml
   when: redis_local_facts|bool

@@ -25,6 +25,7 @@
     url: "{{ redis_download_url }}"
     dest: /usr/local/src/redis-{{ redis_version }}.tar.gz
     checksum: "{{ redis_checksum|default(omit) }}"
+    timeout: 30
   when:
     - not redis_tarball
     - ansible_version.major >= 2

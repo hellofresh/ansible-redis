@@ -1,0 +1,95 @@
+---
+- name: cluster | install redis gem
+  gem:
+    name: redis
+    state: present
+    user_install: no
+
+- name: cluster | check if cluster support is enabled
+  shell: "redis-cli info cluster | grep cluster_enabled: | cut -d: -f2"
+  delegate_to: "{{ item }}"
+  changed_when: false
+  run_once: true
+  with_items: "{{ groups[redis_cluster_group] }}"
+  register: redis_cluster_support
+  tags: cluster
+
+- name: cluster | create a list of nodes and cluster support status
+  set_fact:
+   redis_cluster_nodes_support: "{{ [{ 'node': item.item, 'support': item.stdout }] + redis_cluster_nodes_support }}"
+  with_items: "{{ redis_cluster_support.results }}"
+  run_once: true
+  tags: cluster
+
+- name: cluster | fail if some nodes don't have cluster support
+  fail:
+    msg="Cluster support is not enabled for following nodes {{ redis_cluster_nodes_support | selectattr('support', 'equalto', '0') | map(attribute='node') | list }}"
+  run_once: true
+  when: redis_cluster_nodes_support | selectattr('support', 'equalto', '1') | list != redis_cluster_nodes_support
+  tags: cluster
+
+- name: cluster | check if node is fresh (not part of any cluster)
+  shell: "redis-cli cluster info | grep cluster_known_nodes: | cut -d: -f2"
+  delegate_to: "{{ item }}"
+  changed_when: false
+  run_once: true
+  with_items: "{{ groups[redis_cluster_group] }}"
+  register: redis_cluster_known_nodes
+  tags: cluster
+
+- name: cluster | create a list of fresh nodes
+  set_fact:
+    redis_cluster_fresh_nodes: "{{ [{ 'node': item.item, 'known_nodes': item.stdout }] + redis_cluster_fresh_nodes }}"
+  with_items: "{{ redis_cluster_known_nodes.results }}"
+  run_once: true
+  tags: cluster
+
+- name: cluster | set fact if some nodes are not fresh
+  set_fact:
+    redis_cluster_all_nodes_fresh: false
+  when: redis_cluster_fresh_nodes | selectattr('known_nodes', 'equalto', '1') | list != redis_cluster_fresh_nodes
+  run_once: true
+  tags: cluster
+
+- name: cluster | check if all the nodes are part of the same cluster
+  shell: "redis-cli cluster nodes | sort | sed -e 's/myself,//' | cut -d ' ' -f1,2,3,4,5"
+  delegate_to: "{{ item }}"
+  changed_when: false
+  run_once: true
+  with_items: "{{ groups[redis_cluster_group] }}"
+  register: redis_cluster_nodes_command
+  tags: cluster
+
+- name: cluster | create a list of nodes and nodes :)
+  set_fact:
+    redis_cluster_nodes_list: "{{ [{ 'node': item.item, 'nodes': item.stdout }] + redis_cluster_nodes_list }}"
+  with_items: "{{ redis_cluster_nodes_command.results }}"
+  run_once: true
+  tags: cluster
+
+- name: cluster | set fact if cluster nodes list is different among nodes
+  set_fact:
+    redis_cluster_nodes_difference: true
+  when: redis_cluster_nodes_list | selectattr('nodes', 'equalto', redis_cluster_nodes_list[0]['nodes']) | list != redis_cluster_nodes_list      
+  run_once: true
+  tags: cluster
+
+- name: debug
+  debug:
+    msg: "{{ redis_cluster_nodes_difference }}"
+  run_once: true
+  tags: cluster
+
+- name: cluster | Fail if cluster nodes list is not empty and different among nodes
+  fail:
+    msg="Some nodes are not part of this cluster {{ redis_cluster_nodes_list | selectattr('nodes', 'equalto', redis_cluster_nodes_list[0]['nodes']) | list }}"
+  run_once: true
+  when: not redis_cluster_all_nodes_fresh|bool and redis_cluster_nodes_difference|bool
+  tags: cluster
+
+- name: cluster | create cluster
+  shell: "echo 'yes' | /usr/local/src/redis-{{ redis_version }}/src/redis-trib.rb create --replicas {{ redis_cluster_replicas }} {{ groups[redis_cluster_group] | map('extract', hostvars, ['ansible_default_ipv4', 'address']) | join(':6379 ') }}:6379"
+  delegate_to: "{{ groups[redis_cluster_group][0] }}"
+  run_once: true
+  when: redis_cluster_all_nodes_fresh|bool
+  tags: cluster
